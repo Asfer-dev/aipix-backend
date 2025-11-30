@@ -1,0 +1,371 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/**
+ * =========================
+ * CORE: ROLES, ORGS, USERS
+ * =========================
+ */
+
+model Role {
+  id          Int     @id @default(autoincrement())
+  name        String  @unique
+  description String?
+
+  users UserRole[]
+}
+
+model Organization {
+  id        Int      @id @default(autoincrement())
+  name      String
+  createdAt DateTime @default(now())
+
+  users         User[]
+  projects      Project[]
+  listings      Listing[]
+  subscriptions Subscription[]
+}
+
+model User {
+  id             Int       @id @default(autoincrement())
+  organizationId Int?
+  email          String    @unique
+  passwordHash   String
+  displayName    String
+  isActive       Boolean   @default(true)
+  mfaEnabled     Boolean   @default(false)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization      Organization?      @relation(fields: [organizationId], references: [id])
+  roles             UserRole[]
+  listings          Listing[]
+  projects          Project[]
+  jobs              Job[]              @relation("JobsCreatedBy")
+  bookings          Booking[]          @relation("BuyerBookings")
+  messagesSent      Message[]          @relation("MessagesSent")
+  messagesReceived  Message[]          @relation("MessagesReceived")
+  moderationActions ModerationAction[]
+  flagsRaised       ModerationFlag[]   @relation("FlagsRaisedBy")
+  subscriptions     Subscription[]
+  auditLogs         AuditLog[]
+  listingFavorites  ListingFavorite[]
+}
+
+model UserRole {
+  userId Int
+  roleId Int
+
+  user User @relation(fields: [userId], references: [id])
+  role Role @relation(fields: [roleId], references: [id])
+
+  @@id([userId, roleId])
+}
+
+/**
+ * =========================
+ * PLANS, SUBSCRIPTIONS, CREDITS
+ * =========================
+ */
+
+model Plan {
+  id              Int      @id @default(autoincrement())
+  name            String   @unique
+  description     String?
+  monthlyPriceUsd Decimal  @db.Decimal(10, 2)
+  maxAiCredits    Int
+  maxStorageMb    Int
+  createdAt       DateTime @default(now())
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id             Int       @id @default(autoincrement())
+  organizationId Int?
+  userId         Int?
+  planId         Int
+  startDate      DateTime
+  endDate        DateTime?
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  user         User?         @relation(fields: [userId], references: [id])
+  plan         Plan          @relation(fields: [planId], references: [id])
+  creditUsages CreditUsage[]
+}
+
+model CreditUsage {
+  id             Int      @id @default(autoincrement())
+  subscriptionId Int
+  jobId          Int?
+  creditsUsed    Int
+  createdAt      DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+  job          Job?         @relation(fields: [jobId], references: [id])
+}
+
+/**
+ * =========================
+ * PROJECTS, JOBS & MEDIA
+ * =========================
+ */
+
+model Project {
+  id             Int      @id @default(autoincrement())
+  ownerUserId    Int?
+  organizationId Int?
+  name           String
+  clientName     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  ownerUser    User?         @relation(fields: [ownerUserId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  jobs         Job[]
+  images       Image[]
+
+  @@unique([ownerUserId, name])
+}
+
+model Job {
+  id           Int      @id @default(autoincrement())
+  projectId    Int?
+  createdById  Int?
+  type         String // 'ENHANCEMENT','STAGING', etc.
+  status       String // 'PENDING','RUNNING','FAILED','COMPLETED'
+  etaSeconds   Int?
+  errorMessage String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  project       Project?       @relation(fields: [projectId], references: [id])
+  createdBy     User?          @relation("JobsCreatedBy", fields: [createdById], references: [id])
+  creditUsages  CreditUsage[]
+  imageVersions ImageVersion[]
+}
+
+model Image {
+  id            Int      @id @default(autoincrement())
+  projectId     Int?
+  originalUrl   String
+  fileName      String?
+  fileSizeBytes Int?
+  widthPx       Int?
+  heightPx      Int?
+  mimeType      String?
+  hashSha256    String?
+  createdAt     DateTime @default(now())
+
+  project  Project?       @relation(fields: [projectId], references: [id])
+  versions ImageVersion[]
+}
+
+model ImageVersion {
+  id           Int      @id @default(autoincrement())
+  imageId      Int
+  jobId        Int?
+  kind         String // 'ENHANCED','STAGED','CHANNEL_DERIVATIVE'
+  url          String
+  widthPx      Int?
+  heightPx     Int?
+  exifScrubbed Boolean  @default(false)
+  presetName   String?
+  isFinal      Boolean  @default(false)
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  image           Image            @relation(fields: [imageId], references: [id])
+  job             Job?             @relation(fields: [jobId], references: [id])
+  listingMedia    ListingMedia[]
+  moderationFlags ModerationFlag[]
+}
+
+/**
+ * =========================
+ * MARKETPLACE: LISTINGS, MEDIA, BOOKINGS, MESSAGES
+ * =========================
+ */
+
+model Listing {
+  id             Int      @id @default(autoincrement())
+  listerId       Int
+  organizationId Int?
+  title          String
+  description    String?
+  propertyType   String? // 'APARTMENT','HOUSE', etc.
+  price          Decimal? @db.Decimal(14, 2)
+  currency       String   @default("USD")
+  locationText   String?
+  latitude       Decimal? @db.Decimal(9, 6)
+  longitude      Decimal? @db.Decimal(9, 6)
+  bedrooms       Int?
+  bathrooms      Int?
+  areaSqM        Decimal? @db.Decimal(10, 2)
+  status         String   @default("DRAFT") // 'DRAFT','PUBLISHED','ARCHIVED'
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  lister       User          @relation(fields: [listerId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id])
+
+  media           ListingMedia[]
+  favorites       ListingFavorite[]
+  bookings        Booking[]
+  messages        Message[]
+  ads             ListingAd[]
+  exports         ListingExport[]
+  moderationFlags ModerationFlag[]
+}
+
+model ListingMedia {
+  listingId      Int
+  imageVersionId Int
+  isHero         Boolean @default(false)
+  position       Int     @default(0)
+
+  listing      Listing      @relation(fields: [listingId], references: [id])
+  imageVersion ImageVersion @relation(fields: [imageVersionId], references: [id])
+
+  @@id([listingId, imageVersionId])
+}
+
+model ListingFavorite {
+  userId    Int
+  listingId Int
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id])
+  listing Listing @relation(fields: [listingId], references: [id])
+
+  @@id([userId, listingId])
+}
+
+model Booking {
+  id             Int      @id @default(autoincrement())
+  listingId      Int
+  buyerId        Int
+  requestedStart DateTime
+  requestedEnd   DateTime
+  status         String   @default("PENDING") // 'PENDING','CONFIRMED','REJECTED','CANCELLED'
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  listing Listing @relation(fields: [listingId], references: [id])
+  buyer   User    @relation("BuyerBookings", fields: [buyerId], references: [id])
+}
+
+model Message {
+  id         Int      @id @default(autoincrement())
+  listingId  Int
+  senderId   Int
+  receiverId Int
+  content    String
+  isFromAi   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  listing  Listing @relation(fields: [listingId], references: [id])
+  sender   User    @relation("MessagesSent", fields: [senderId], references: [id])
+  receiver User    @relation("MessagesReceived", fields: [receiverId], references: [id])
+}
+
+/**
+ * =========================
+ * ADS & EXPORTS (Module 6)
+ * =========================
+ */
+
+model ListingAd {
+  id              Int      @id @default(autoincrement())
+  listingId       Int
+  channel         String // 'AIPIX','FACEBOOK','PORTAL_X', etc.
+  title           String
+  description     String
+  keywords        String?
+  complianceScore Int?
+  isActive        Boolean  @default(true)
+  createdByAi     Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  listing Listing @relation(fields: [listingId], references: [id])
+}
+
+model ListingExport {
+  id            Int      @id @default(autoincrement())
+  listingId     Int
+  channel       String // partner identifier
+  payloadFormat String // 'JSON','XML','CSV','PDF'
+  status        String   @default("PENDING") // 'PENDING','SUCCESS','FAILED'
+  externalUrl   String?
+  errorMessage  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  listing Listing @relation(fields: [listingId], references: [id])
+}
+
+/**
+ * =========================
+ * TRUST, SAFETY & MODERATION
+ * =========================
+ */
+
+model ModerationFlag {
+  id             Int      @id @default(autoincrement())
+  listingId      Int?
+  imageVersionId Int?
+  raisedByUserId Int?
+  source         String // 'AI','USER','SYSTEM'
+  reasonCode     String // 'NSFW','DUPLICATE','FRAUD','TEXT_OVERLAY', etc.
+  severity       String // 'LOW','MEDIUM','HIGH'
+  details        String?
+  resolved       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  listing      Listing?           @relation(fields: [listingId], references: [id])
+  imageVersion ImageVersion?      @relation(fields: [imageVersionId], references: [id])
+  raisedByUser User?              @relation("FlagsRaisedBy", fields: [raisedByUserId], references: [id])
+  actions      ModerationAction[]
+}
+
+model ModerationAction {
+  id          Int      @id @default(autoincrement())
+  flagId      Int
+  moderatorId Int
+  actionType  String // 'APPROVE','REJECT','BLUR','REDACT'
+  comment     String?
+  createdAt   DateTime @default(now())
+
+  flag      ModerationFlag @relation(fields: [flagId], references: [id])
+  moderator User           @relation(fields: [moderatorId], references: [id])
+}
+
+/**
+ * =========================
+ * AUDIT LOGS
+ * =========================
+ */
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int?
+  entityType String // 'USER','LISTING','IMAGE','PLAN',...
+  entityId   Int?
+  action     String // 'CREATE','UPDATE','DELETE','LOGIN',...
+  details    Json?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+}

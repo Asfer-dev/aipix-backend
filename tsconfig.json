@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    // File layout
+    "rootDir": "./src",
+    "outDir": "./dist",
+
+    // Node backend target
+    "module": "commonjs",
+    "target": "ES2020",
+    "moduleResolution": "node",
+
+    // Environment / types
+    "lib": ["ES2020"],
+    "types": ["node"],
+
+    // Outputs
+    "sourceMap": true,
+    "declaration": false,
+    "declarationMap": false,
+
+    // Type checking
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+
+    // JSX not needed on backend, but harmless if left
+    "jsx": "react-jsx",
+
+    // Import behaviour
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["src"]
+}
