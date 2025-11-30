@@ -2,7 +2,8 @@
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
-import prisma from "./prisma";
+import { sendEmail } from "./lib/mailer";
+import authRoutes from "./modules/auth/auth.routes";
 
 dotenv.config();
 
@@ -18,37 +19,23 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", service: "aipix-backend" });
 });
 
-// TEMP: list all users (just to test DB)
-app.get("/users", async (req, res) => {
+// TEMP:
+app.get("/test-email", async (req, res) => {
   try {
-    const users = await prisma.user.findMany();
-    res.json(users);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to fetch users" });
-  }
-});
-
-// TEMP: create user (simple test)
-app.post("/users", async (req, res) => {
-  try {
-    const { email, displayName, password } = req.body;
-
-    // NOTE: in real app, hash password!
-    const user = await prisma.user.create({
-      data: {
-        email,
-        displayName,
-        passwordHash: password,
-      },
+    await sendEmail({
+      to: "asferali004@gmail.com",
+      subject: "AIPIX SMTP test",
+      text: "If you see this, SMTP works 🎉",
     });
-
-    res.status(201).json(user);
-  } catch (err: any) {
-    console.error(err);
-    res.status(500).json({ error: err.message || "Failed to create user" });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to send test email" });
   }
 });
+
+// Auth routes
+app.use("/auth", authRoutes);
 
 app.listen(PORT, () => {
   console.log(`AIPIX backend running on http://localhost:${PORT}`);

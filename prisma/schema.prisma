@@ -34,30 +34,34 @@ model Organization {
 }
 
 model User {
-  id             Int       @id @default(autoincrement())
-  organizationId Int?
-  email          String    @unique
-  passwordHash   String
-  displayName    String
-  isActive       Boolean   @default(true)
-  mfaEnabled     Boolean   @default(false)
-  lastLoginAt    DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id              Int       @id @default(autoincrement())
+  organizationId  Int?
+  email           String    @unique
+  passwordHash    String
+  displayName     String
+  isActive        Boolean   @default(true)
+  mfaEnabled      Boolean   @default(false)
+  mfaSecret       String? // secret used for TOTP
+  emailVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  organization      Organization?      @relation(fields: [organizationId], references: [id])
-  roles             UserRole[]
-  listings          Listing[]
-  projects          Project[]
-  jobs              Job[]              @relation("JobsCreatedBy")
-  bookings          Booking[]          @relation("BuyerBookings")
-  messagesSent      Message[]          @relation("MessagesSent")
-  messagesReceived  Message[]          @relation("MessagesReceived")
-  moderationActions ModerationAction[]
-  flagsRaised       ModerationFlag[]   @relation("FlagsRaisedBy")
-  subscriptions     Subscription[]
-  auditLogs         AuditLog[]
-  listingFavorites  ListingFavorite[]
+  organization            Organization?            @relation(fields: [organizationId], references: [id])
+  roles                   UserRole[]
+  listings                Listing[]
+  projects                Project[]
+  jobs                    Job[]                    @relation("JobsCreatedBy")
+  bookings                Booking[]                @relation("BuyerBookings")
+  messagesSent            Message[]                @relation("MessagesSent")
+  messagesReceived        Message[]                @relation("MessagesReceived")
+  moderationActions       ModerationAction[]
+  flagsRaised             ModerationFlag[]         @relation("FlagsRaisedBy")
+  subscriptions           Subscription[]
+  auditLogs               AuditLog[]
+  listingFavorites        ListingFavorite[]
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
 }
 
 model UserRole {
@@ -68,6 +72,32 @@ model UserRole {
   role Role @relation(fields: [roleId], references: [id])
 
   @@id([userId, roleId])
+}
+
+model EmailVerificationToken {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
 }
 
 /**
