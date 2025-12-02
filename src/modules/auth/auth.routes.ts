@@ -5,7 +5,9 @@ import {
   enableMfaHandler,
   forgotPasswordHandler,
   loginHandler,
+  meHandler,
   registerHandler,
+  resendVerificationHandler,
   resetPasswordHandler,
   setupMfaHandler,
   verifyEmailHandler,
@@ -16,7 +18,10 @@ const router = Router();
 router.post("/register", registerHandler);
 router.post("/login", loginHandler);
 
+router.get("/me", authMiddleware, meHandler);
+
 router.post("/verify-email", verifyEmailHandler);
+router.post("/resend-verification", resendVerificationHandler);
 
 router.post("/forgot-password", forgotPasswordHandler);
 router.post("/reset-password", resetPasswordHandler);

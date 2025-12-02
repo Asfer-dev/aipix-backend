@@ -49,9 +49,9 @@ model User {
 
   organization            Organization?            @relation(fields: [organizationId], references: [id])
   roles                   UserRole[]
-  listings                Listing[]
   projects                Project[]
   jobs                    Job[]                    @relation("JobsCreatedBy")
+  listings                Listing[]                @relation("UserListings")
   bookings                Booking[]                @relation("BuyerBookings")
   messagesSent            Message[]                @relation("MessagesSent")
   messagesReceived        Message[]                @relation("MessagesReceived")
@@ -62,6 +62,9 @@ model User {
   listingFavorites        ListingFavorite[]
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
+  enhancementJobs         EnhancementJob[]
+
+  projectAdCopies         ProjectAdCopy[]
 }
 
 model UserRole {
@@ -135,14 +138,19 @@ model Subscription {
 }
 
 model CreditUsage {
-  id             Int      @id @default(autoincrement())
+  id             Int  @id @default(autoincrement())
   subscriptionId Int
   jobId          Int?
-  creditsUsed    Int
-  createdAt      DateTime @default(now())
+
+  creditsUsed Int
+  reason      String?
+  createdAt   DateTime @default(now())
 
   subscription Subscription @relation(fields: [subscriptionId], references: [id])
   job          Job?         @relation(fields: [jobId], references: [id])
+
+  @@index([subscriptionId])
+  @@index([jobId])
 }
 
 /**
@@ -151,74 +159,129 @@ model CreditUsage {
  * =========================
  */
 
-model Project {
-  id             Int      @id @default(autoincrement())
-  ownerUserId    Int?
-  organizationId Int?
-  name           String
-  clientName     String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  ownerUser    User?         @relation(fields: [ownerUserId], references: [id])
-  organization Organization? @relation(fields: [organizationId], references: [id])
-  jobs         Job[]
-  images       Image[]
-
-  @@unique([ownerUserId, name])
+enum ImageVersionType {
+  ORIGINAL
+  ENHANCED
+  STAGED
 }
 
-model Job {
-  id           Int      @id @default(autoincrement())
-  projectId    Int?
-  createdById  Int?
-  type         String // 'ENHANCEMENT','STAGING', etc.
-  status       String // 'PENDING','RUNNING','FAILED','COMPLETED'
-  etaSeconds   Int?
-  errorMessage String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
 
-  project       Project?       @relation(fields: [projectId], references: [id])
-  createdBy     User?          @relation("JobsCreatedBy", fields: [createdById], references: [id])
-  creditUsages  CreditUsage[]
-  imageVersions ImageVersion[]
+model Project {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  name       String
+  clientName String?
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  owner           User             @relation(fields: [userId], references: [id])
+  images          Image[]
+  organization    Organization?    @relation(fields: [organizationId], references: [id])
+  organizationId  Int?
+  enhancementJobs EnhancementJob[]
+  jobs            Job[]
+  listings        Listing[]
+
+  // NEW: project-scoped ad/listing copy templates
+  adCopies        ProjectAdCopy[]
+
+  @@index([userId])
+}
+
+model ProjectAdCopy {
+  id          Int      @id @default(autoincrement())
+  projectId   Int
+  channel     String   // e.g. 'AIPIX', 'FACEBOOK', 'PORTAL_X'
+  title       String
+  description String
+  keywords    String?
+  createdById Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project   Project @relation(fields: [projectId], references: [id])
+  createdBy User    @relation(fields: [createdById], references: [id])
+
+  @@index([projectId])
+  @@index([createdById])
 }
 
 model Image {
-  id            Int      @id @default(autoincrement())
-  projectId     Int?
-  originalUrl   String
-  fileName      String?
-  fileSizeBytes Int?
-  widthPx       Int?
-  heightPx      Int?
-  mimeType      String?
-  hashSha256    String?
-  createdAt     DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  projectId   Int
+  originalUrl String
+  label       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  project  Project?       @relation(fields: [projectId], references: [id])
-  versions ImageVersion[]
+  project         Project          @relation(fields: [projectId], references: [id])
+  versions        ImageVersion[]
+  enhancementJobs EnhancementJob[]
+  jobs            Job[]
+
+  @@index([projectId])
 }
 
 model ImageVersion {
-  id           Int      @id @default(autoincrement())
-  imageId      Int
-  jobId        Int?
-  kind         String // 'ENHANCED','STAGED','CHANNEL_DERIVATIVE'
-  url          String
-  widthPx      Int?
-  heightPx     Int?
-  exifScrubbed Boolean  @default(false)
-  presetName   String?
-  isFinal      Boolean  @default(false)
-  metadata     Json?
-  createdAt    DateTime @default(now())
+  id        Int              @id @default(autoincrement())
+  imageId   Int
+  type      ImageVersionType
+  url       String
+  metadata  Json?
+  createdAt DateTime         @default(now())
 
   image           Image            @relation(fields: [imageId], references: [id])
-  job             Job?             @relation(fields: [jobId], references: [id])
-  listingMedia    ListingMedia[]
+  listingMedias   ListingMedia[]
   moderationFlags ModerationFlag[]
+
+  @@index([imageId, type])
+}
+
+model EnhancementJob {
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  projectId    Int
+  imageId      Int
+  status       JobStatus @default(PENDING)
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id])
+  project Project @relation(fields: [projectId], references: [id])
+  image   Image   @relation(fields: [imageId], references: [id])
+
+  @@index([userId])
+  @@index([projectId])
+  @@index([imageId])
+}
+
+model Job {
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  projectId    Int
+  imageId      Int
+  status       JobStatus @default(PENDING)
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relations
+  user         User          @relation("JobsCreatedBy", fields: [userId], references: [id])
+  project      Project       @relation(fields: [projectId], references: [id])
+  image        Image         @relation(fields: [imageId], references: [id])
+  creditUsages CreditUsage[]
+
+  @@index([userId])
+  @@index([projectId])
+  @@index([imageId])
 }
 
 /**
@@ -227,48 +290,62 @@ model ImageVersion {
  * =========================
  */
 
+enum ListingStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
 model Listing {
-  id             Int      @id @default(autoincrement())
-  listerId       Int
-  organizationId Int?
-  title          String
-  description    String?
-  propertyType   String? // 'APARTMENT','HOUSE', etc.
-  price          Decimal? @db.Decimal(14, 2)
-  currency       String   @default("USD")
-  locationText   String?
-  latitude       Decimal? @db.Decimal(9, 6)
-  longitude      Decimal? @db.Decimal(9, 6)
-  bedrooms       Int?
-  bathrooms      Int?
-  areaSqM        Decimal? @db.Decimal(10, 2)
-  status         String   @default("DRAFT") // 'DRAFT','PUBLISHED','ARCHIVED'
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id              Int           @id @default(autoincrement())
+  userId          Int
+  projectId       Int
+  title           String
+  description     String?
+  price           Float?
+  currency        String? // e.g. "USD", "NGN"
+  status          ListingStatus @default(DRAFT)
+  isPublished     Boolean       @default(false)
+  locationCity    String?
+  locationState   String?
+  locationCountry String?
+  propertyType    String? // "Apartment", "House", etc.
+  bedrooms        Int?
+  bathrooms       Int?
+  areaSqm         Float?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
-  lister       User          @relation(fields: [listerId], references: [id])
-  organization Organization? @relation(fields: [organizationId], references: [id])
+  user             User              @relation("UserListings", fields: [userId], references: [id])
+  project          Project           @relation(fields: [projectId], references: [id])
+  media            ListingMedia[]
+  organization     Organization?     @relation(fields: [organizationId], references: [id])
+  organizationId   Int?
+  listingFavorites ListingFavorite[]
+  bookings         Booking[]
+  messages         Message[]
+  listingAds       ListingAd[]
+  listingExports   ListingExport[]
+  moderationFlags  ModerationFlag[]
 
-  media           ListingMedia[]
-  favorites       ListingFavorite[]
-  bookings        Booking[]
-  messages        Message[]
-  ads             ListingAd[]
-  exports         ListingExport[]
-  moderationFlags ModerationFlag[]
+  @@index([status])
+  @@index([isPublished])
+  @@index([locationCity])
+  @@index([locationCountry])
 }
 
 model ListingMedia {
+  id             Int     @id @default(autoincrement())
   listingId      Int
   imageVersionId Int
   isHero         Boolean @default(false)
-  position       Int     @default(0)
+  sortOrder      Int     @default(0)
 
   listing      Listing      @relation(fields: [listingId], references: [id])
   imageVersion ImageVersion @relation(fields: [imageVersionId], references: [id])
 
-  @@id([listingId, imageVersionId])
+  @@index([listingId])
+  @@index([imageVersionId])
 }
 
 model ListingFavorite {

@@ -167,6 +167,41 @@ export async function verifyEmail(token: string) {
   return { success: true };
 }
 
+export async function resendEmailVerification(email: string) {
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) {
+    throw new Error("USER_NOT_FOUND");
+  }
+
+  // If already verified, no need to resend
+  // emailVerifiedAt is nullable; check for not-null to detect verification
+  if (user.emailVerifiedAt) {
+    throw new Error("ALREADY_VERIFIED");
+  }
+
+  // Optionally: you could clean old tokens here, but it's not required.
+  const tokenRecord = await createEmailVerificationToken(user.id);
+
+  const verifyUrl = `${APP_BASE_URL}/verify-email?token=${tokenRecord.token}`;
+
+  await sendEmail({
+    to: user.email,
+    subject: "Verify your email for AIPIX (resend)",
+    text: `Hi ${user.displayName},\n\nYou requested a new verification link for your AIPIX account. Please verify your email by clicking the link below:\n${verifyUrl}\n\nIf you did not request this, you can ignore this email.`,
+    html: `
+      <p>Hi ${user.displayName},</p>
+      <p>You requested a new verification link for your <strong>AIPIX</strong> account.</p>
+      <p>Please verify your email by clicking the button below:</p>
+      <p><a href="${verifyUrl}" style="display:inline-block;padding:10px 16px;background:#2563eb;color:white;text-decoration:none;border-radius:4px;">Verify Email</a></p>
+      <p>Or copy and paste this link into your browser:</p>
+      <p><code>${verifyUrl}</code></p>
+      <p>If you did not request this, you can safely ignore this email.</p>
+    `,
+  });
+
+  return { success: true };
+}
+
 // Password Reset
 async function createPasswordResetToken(userId: number) {
   const token = uuidv4();

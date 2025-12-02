@@ -6,6 +6,7 @@ import {
   loginUser,
   registerUser,
   requestPasswordReset,
+  resendEmailVerification,
   resetPasswordWithToken,
   setupMfa,
   verifyEmail,
@@ -88,6 +89,76 @@ export async function verifyEmailHandler(req: Request, res: Response) {
 
     console.error("Verify email error:", err);
     return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function resendVerificationHandler(req: Request, res: Response) {
+  try {
+    // read email from request body so this endpoint does not require auth
+    const { email } = req.body as { email?: string };
+    if (!email) return res.status(400).json({ error: "Email required" });
+
+    await resendEmailVerification(email);
+
+    return res.json({
+      message: "Verification email resent. Please check your inbox.",
+    });
+  } catch (err: any) {
+    if (err.message === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    if (err.message === "ALREADY_VERIFIED") {
+      return res.status(400).json({
+        error: "ALREADY_VERIFIED",
+        message: "Email is already verified.",
+      });
+    }
+
+    console.error("Error resending verification email:", err);
+    return res.status(500).json({ error: "INTERNAL_ERROR" });
+  }
+}
+
+import prisma from "../../prisma"; // adjust path to your prisma.ts
+
+// This matches what your auth middleware attaches
+interface AuthUser {
+  id: number;
+  email: string;
+}
+
+interface AuthRequest extends Request {
+  user?: AuthUser;
+}
+
+export async function meHandler(req: AuthRequest, res: Response) {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: "UNAUTHORIZED" });
+    }
+
+    const dbUser = await prisma.user.findUnique({
+      where: { id: req.user.id },
+    });
+
+    if (!dbUser) {
+      return res.status(404).json({ error: "USER_NOT_FOUND" });
+    }
+
+    // Map Prisma User -> frontend User type
+    const apiUser = {
+      id: dbUser.id,
+      email: dbUser.email,
+      displayName: dbUser.displayName,
+      isEmailVerified: !!dbUser.emailVerifiedAt,
+      mfaEnabled: dbUser.mfaEnabled,
+    };
+
+    return res.json({ user: apiUser });
+  } catch (err) {
+    console.error("Error in /me handler:", err);
+    return res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 }
 
