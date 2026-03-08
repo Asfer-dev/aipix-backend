@@ -14,12 +14,12 @@ datasource db {
  * =========================
  */
 
-model Role {
-  id          Int     @id @default(autoincrement())
-  name        String  @unique
-  description String?
-
-  users UserRole[]
+enum UserRole {
+  BUYER // Can browse, favorite, book, message
+  LISTER // Can create listings, projects, use AI tools
+  EDITOR // Can manually review AI outputs (internal team)
+  MODERATOR // Can review flagged content
+  ADMIN // Full system access
 }
 
 model Organization {
@@ -34,47 +34,46 @@ model Organization {
 }
 
 model User {
-  id              Int       @id @default(autoincrement())
-  organizationId  Int?
-  email           String    @unique
-  passwordHash    String
-  displayName     String
-  isActive        Boolean   @default(true)
-  mfaEnabled      Boolean   @default(false)
-  mfaSecret       String? // secret used for TOTP
+  id             Int     @id @default(autoincrement())
+  organizationId Int?
+  email          String  @unique
+  passwordHash   String
+  displayName    String
+  phoneNumber    String? // Optional phone number for contact
+  isActive       Boolean @default(true)
+  mfaEnabled     Boolean @default(false)
+  mfaSecret      String?
+
+  // Role Management
+  primaryRole        UserRole   @default(BUYER)
+  roles              UserRole[]
+  onboardingComplete Boolean    @default(false)
+
   emailVerifiedAt DateTime?
   lastLoginAt     DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   organization            Organization?            @relation(fields: [organizationId], references: [id])
-  roles                   UserRole[]
   projects                Project[]
   jobs                    Job[]                    @relation("JobsCreatedBy")
   listings                Listing[]                @relation("UserListings")
+  moderatedListings       Listing[]                @relation("ModeratedListings")
   bookings                Booking[]                @relation("BuyerBookings")
   messagesSent            Message[]                @relation("MessagesSent")
   messagesReceived        Message[]                @relation("MessagesReceived")
   moderationActions       ModerationAction[]
   flagsRaised             ModerationFlag[]         @relation("FlagsRaisedBy")
+  moderationLogs          ModerationLog[]          @relation("ModerationLogsUser")
+  moderationReviews       ModerationLog[]          @relation("ModerationLogsReviewer")
   subscriptions           Subscription[]
   auditLogs               AuditLog[]
   listingFavorites        ListingFavorite[]
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
   enhancementJobs         EnhancementJob[]
-
   projectAdCopies         ProjectAdCopy[]
-}
-
-model UserRole {
-  userId Int
-  roleId Int
-
-  user User @relation(fields: [userId], references: [id])
-  role Role @relation(fields: [roleId], references: [id])
-
-  @@id([userId, roleId])
+  payments                Payment[]
 }
 
 model EmailVerificationToken {
@@ -110,15 +109,22 @@ model PasswordResetToken {
  */
 
 model Plan {
-  id              Int      @id @default(autoincrement())
-  name            String   @unique
+  id              Int     @id @default(autoincrement())
+  name            String  @unique
   description     String?
-  monthlyPriceUsd Decimal  @db.Decimal(10, 2)
-  maxAiCredits    Int
+  monthlyPriceUsd Decimal @db.Decimal(10, 2)
+  maxAiCredits    Int // Monthly credit allocation
   maxStorageMb    Int
-  createdAt       DateTime @default(now())
+
+  // Credits Pricing (credits per second of processing)
+  enhancementCreditsPerSecond    Decimal @default(0.1) @db.Decimal(10, 4)
+  virtualStagingCreditsPerSecond Decimal @default(0.2) @db.Decimal(10, 4)
+  adGenerationCreditsPerSecond   Decimal @default(0.05) @db.Decimal(10, 4)
+
+  createdAt DateTime @default(now())
 
   subscriptions Subscription[]
+  payments      Payment[]
 }
 
 model Subscription {
@@ -129,12 +135,22 @@ model Subscription {
   startDate      DateTime
   endDate        DateTime?
   isActive       Boolean   @default(true)
+  
+  // Direct tracking for quick dashboard access
+  currentCreditsUsed Int   @default(0) // Current credits consumed this billing cycle
+  currentStorageMb   Float @default(0) // Current storage used in MB
+  
   createdAt      DateTime  @default(now())
 
-  organization Organization? @relation(fields: [organizationId], references: [id])
-  user         User?         @relation(fields: [userId], references: [id])
-  plan         Plan          @relation(fields: [planId], references: [id])
-  creditUsages CreditUsage[]
+  organization  Organization?  @relation(fields: [organizationId], references: [id])
+  user          User?          @relation(fields: [userId], references: [id])
+  plan          Plan           @relation(fields: [planId], references: [id])
+  creditUsages  CreditUsage[]
+  storageUsages StorageUsage[]
+  payments      Payment[]
+  
+  @@index([userId])
+  @@index([isActive])
 }
 
 model CreditUsage {
@@ -142,15 +158,86 @@ model CreditUsage {
   subscriptionId Int
   jobId          Int?
 
-  creditsUsed Int
-  reason      String?
-  createdAt   DateTime @default(now())
+  creditsUsed      Int
+  processingTimeMs Int? // Time taken for this job
+  jobType          String? // Type of job that consumed credits
+  reason           String?
+  createdAt        DateTime @default(now())
 
   subscription Subscription @relation(fields: [subscriptionId], references: [id])
   job          Job?         @relation(fields: [jobId], references: [id])
 
   @@index([subscriptionId])
   @@index([jobId])
+  @@index([createdAt]) // For usage reports
+}
+
+model StorageUsage {
+  id             Int      @id @default(autoincrement())
+  subscriptionId Int
+  imageId        Int?
+  projectId      Int?
+  
+  fileSizeMb     Float // File size in MB
+  fileUrl        String // S3 URL of the file
+  fileName       String? // Original filename
+  operation      String // "UPLOAD" or "DELETE"
+  
+  createdAt      DateTime @default(now())
+  
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+  
+  @@index([subscriptionId])
+  @@index([operation])
+  @@index([createdAt])
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  MOCK      // For development/testing
+  STRIPE
+  PAYPAL
+  CREDIT_CARD
+}
+
+model Payment {
+  id             Int           @id @default(autoincrement())
+  userId         Int
+  subscriptionId Int
+  planId         Int
+  amount         Decimal       @db.Decimal(10, 2)
+  currency       String        @default("USD")
+  status         PaymentStatus @default(PENDING)
+  paymentMethod  PaymentMethod @default(MOCK)
+  
+  // External payment gateway IDs (for Stripe/PayPal integration later)
+  stripePaymentId     String?
+  stripeCustomerId    String?
+  paypalTransactionId String?
+  
+  // Transaction details
+  description String?
+  metadata    Json?   // Additional data (invoice number, etc.)
+  
+  // Timestamps
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id])
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+  plan         Plan         @relation(fields: [planId], references: [id])
+
+  @@index([userId])
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([createdAt])
 }
 
 /**
@@ -166,10 +253,21 @@ enum ImageVersionType {
 }
 
 enum JobStatus {
-  PENDING
-  RUNNING
-  COMPLETED
-  FAILED
+  PENDING // Job created, waiting in queue
+  QUEUED // Job picked up by queue manager
+  RUNNING // Job being processed by AI service
+  COMPLETED // Job finished successfully
+  FAILED // Job failed with error
+  CANCELLED // Job cancelled by user
+}
+
+enum JobType {
+  ENHANCEMENT // Photo enhancement
+  VIRTUAL_STAGING // Virtual staging
+  AD_GENERATION // Ad copy generation
+  BACKGROUND_REMOVAL
+  SKY_REPLACEMENT
+  HDR_PROCESSING
 }
 
 model Project {
@@ -190,7 +288,7 @@ model Project {
   listings        Listing[]
 
   // NEW: project-scoped ad/listing copy templates
-  adCopies        ProjectAdCopy[]
+  adCopies ProjectAdCopy[]
 
   @@index([userId])
 }
@@ -198,7 +296,7 @@ model Project {
 model ProjectAdCopy {
   id          Int      @id @default(autoincrement())
   projectId   Int
-  channel     String   // e.g. 'AIPIX', 'FACEBOOK', 'PORTAL_X'
+  channel     String // e.g. 'AIPIX', 'FACEBOOK', 'PORTAL_X'
   title       String
   description String
   keywords    String?
@@ -264,14 +362,41 @@ model EnhancementJob {
 }
 
 model Job {
-  id           Int       @id @default(autoincrement())
-  userId       Int
-  projectId    Int
-  imageId      Int
-  status       JobStatus @default(PENDING)
+  id        Int @id @default(autoincrement())
+  userId    Int
+  projectId Int
+  imageId   Int
+
+  // Job Configuration
+  type     JobType   @default(ENHANCEMENT)
+  status   JobStatus @default(PENDING)
+  priority Int       @default(0) // Higher number = higher priority
+
+  // Queue Management
+  queuedAt    DateTime? // When job entered queue
+  startedAt   DateTime? // When processing started
+  completedAt DateTime? // When processing finished
+
+  // Processing Tracking
+  processingTimeMs Int? // Time taken to process (milliseconds)
+  retryCount       Int  @default(0)
+  maxRetries       Int  @default(3)
+
+  // Cost Tracking
+  creditsCharged   Int? // Credits deducted for this job
+  estimatedCredits Int? // Estimated credits before processing
+
+  // Results & Errors
+  resultUrl    String? // URL of processed image
   errorMessage String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  errorCode    String? // Machine-readable error code
+
+  // Metadata
+  inputParameters Json? // Job-specific parameters
+  outputMetadata  Json? // AI model outputs (confidence, etc.)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
   user         User          @relation("JobsCreatedBy", fields: [userId], references: [id])
@@ -282,6 +407,8 @@ model Job {
   @@index([userId])
   @@index([projectId])
   @@index([imageId])
+  @@index([status, priority, createdAt]) // For queue ordering
+  @@index([status, queuedAt]) // For processing jobs
 }
 
 /**
@@ -313,11 +440,25 @@ model Listing {
   bedrooms        Int?
   bathrooms       Int?
   areaSqm         Float?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+
+  // Contact Privacy Controls
+  showEmail       Boolean @default(true) // Show lister's email to buyers
+  showPhoneNumber Boolean @default(false) // Show lister's phone to buyers
+
+  // AI Content Moderation Fields
+  moderationStatus  String    @default("PENDING") // PENDING, APPROVED, FLAGGED, REJECTED
+  moderationScore   Float? // AI confidence score (0-1)
+  aiModerationFlags String[] // Array of AI flag reasons (e.g., ["spam", "inappropriate"])
+  moderatedAt       DateTime?
+  moderatedBy       Int? // Admin who made final decision
+  autoModerated     Boolean   @default(false) // Was it auto-approved by AI?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   user             User              @relation("UserListings", fields: [userId], references: [id])
   project          Project           @relation(fields: [projectId], references: [id])
+  moderator        User?             @relation("ModeratedListings", fields: [moderatedBy], references: [id])
   media            ListingMedia[]
   organization     Organization?     @relation(fields: [organizationId], references: [id])
   organizationId   Int?
@@ -327,11 +468,13 @@ model Listing {
   listingAds       ListingAd[]
   listingExports   ListingExport[]
   moderationFlags  ModerationFlag[]
+  moderationLogs   ModerationLog[]
 
   @@index([status])
   @@index([isPublished])
   @@index([locationCity])
   @@index([locationCountry])
+  @@index([moderationStatus])
 }
 
 model ListingMedia {
@@ -374,17 +517,24 @@ model Booking {
 }
 
 model Message {
-  id         Int      @id @default(autoincrement())
+  id         Int     @id @default(autoincrement())
   listingId  Int
   senderId   Int
   receiverId Int
   content    String
-  isFromAi   Boolean  @default(false)
-  createdAt  DateTime @default(now())
+  isFromAi   Boolean @default(false)
 
-  listing  Listing @relation(fields: [listingId], references: [id])
-  sender   User    @relation("MessagesSent", fields: [senderId], references: [id])
-  receiver User    @relation("MessagesReceived", fields: [receiverId], references: [id])
+  // AI Content Moderation Fields
+  moderationStatus  String   @default("APPROVED") // APPROVED, FLAGGED, REJECTED
+  moderationScore   Float?
+  aiModerationFlags String[] // Array of AI flag reasons
+
+  createdAt DateTime @default(now())
+
+  listing        Listing         @relation(fields: [listingId], references: [id])
+  sender         User            @relation("MessagesSent", fields: [senderId], references: [id])
+  receiver       User            @relation("MessagesReceived", fields: [receiverId], references: [id])
+  moderationLogs ModerationLog[]
 }
 
 /**
@@ -457,6 +607,32 @@ model ModerationAction {
 
   flag      ModerationFlag @relation(fields: [flagId], references: [id])
   moderator User           @relation(fields: [moderatorId], references: [id])
+}
+
+model ModerationLog {
+  id             Int      @id @default(autoincrement())
+  listingId      Int?
+  messageId      Int?
+  userId         Int
+  moderationType String // "LISTING", "MESSAGE", "IMAGE"
+  status         String // "FLAGGED", "APPROVED", "REJECTED"
+  aiScore        Float?
+  aiFlags        String[]
+  aiModel        String? // e.g., "gpt-4-moderation", "content-moderator-v1"
+  reviewedBy     Int?
+  reviewNotes    String?
+  createdAt      DateTime @default(now())
+
+  user     User     @relation("ModerationLogsUser", fields: [userId], references: [id])
+  reviewer User?    @relation("ModerationLogsReviewer", fields: [reviewedBy], references: [id])
+  listing  Listing? @relation(fields: [listingId], references: [id])
+  message  Message? @relation(fields: [messageId], references: [id])
+
+  @@index([listingId])
+  @@index([messageId])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
 }
 
 /**

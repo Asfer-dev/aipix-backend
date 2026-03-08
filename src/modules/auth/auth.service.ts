@@ -24,10 +24,18 @@ export interface AuthResponse {
 export async function registerUser(
   email: string,
   password: string,
-  displayName: string
+  displayName: string,
+  primaryRole: string = "BUYER",
+  phoneNumber?: string,
 ): Promise<AuthResponse> {
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) throw new Error("EMAIL_TAKEN");
+
+  // Validate role
+  const validRoles = ["BUYER", "LISTER"];
+  if (!validRoles.includes(primaryRole)) {
+    throw new Error("INVALID_ROLE");
+  }
 
   const salt = await bcrypt.genSalt(10);
   const passwordHash = await bcrypt.hash(password, salt);
@@ -37,6 +45,9 @@ export async function registerUser(
       email,
       passwordHash,
       displayName,
+      phoneNumber: phoneNumber || null,
+      primaryRole: primaryRole as any,
+      roles: [primaryRole as any],
     },
   });
 
@@ -74,7 +85,7 @@ export async function registerUser(
 export async function loginUser(
   email: string,
   password: string,
-  mfaCode?: string
+  mfaCode?: string,
 ): Promise<AuthResponse> {
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user) throw new Error("INVALID_CREDENTIALS");
@@ -250,7 +261,7 @@ export async function requestPasswordReset(email: string) {
 
 export async function resetPasswordWithToken(
   token: string,
-  newPassword: string
+  newPassword: string,
 ) {
   const record = await prisma.passwordResetToken.findUnique({
     where: { token },
@@ -354,4 +365,116 @@ export async function disableMfa(userId: number, code: string) {
   });
 
   return { success: true };
+}
+
+// Role Management
+export async function switchUserRole(userId: number, newRole: string) {
+  const validRoles = ["BUYER", "LISTER"];
+  if (!validRoles.includes(newRole)) {
+    throw new Error("INVALID_ROLE");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { roles: true },
+  });
+
+  if (!user) throw new Error("USER_NOT_FOUND");
+
+  // Check if user has access to this role
+  if (!user.roles.includes(newRole as any)) {
+    throw new Error("ROLE_NOT_AVAILABLE");
+  }
+
+  const updatedUser = await prisma.user.update({
+    where: { id: userId },
+    data: { primaryRole: newRole as any },
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      primaryRole: true,
+      roles: true,
+      emailVerifiedAt: true,
+      onboardingComplete: true,
+    },
+  });
+
+  return updatedUser;
+}
+
+export async function addUserRole(userId: number, roleToAdd: string) {
+  const validRoles = ["BUYER", "LISTER"];
+  if (!validRoles.includes(roleToAdd)) {
+    throw new Error("INVALID_ROLE");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { roles: true, primaryRole: true },
+  });
+
+  if (!user) throw new Error("USER_NOT_FOUND");
+
+  // Check if user already has this role
+  if (user.roles.includes(roleToAdd as any)) {
+    throw new Error("ROLE_ALREADY_EXISTS");
+  }
+
+  const updatedUser = await prisma.user.update({
+    where: { id: userId },
+    data: {
+      roles: { push: roleToAdd as any },
+      primaryRole: roleToAdd as any, // Switch to new role immediately
+    },
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      primaryRole: true,
+      roles: true,
+      emailVerifiedAt: true,
+      onboardingComplete: true,
+    },
+  });
+
+  return updatedUser;
+}
+
+export async function getUserRoles(userId: number) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      primaryRole: true,
+      roles: true,
+    },
+  });
+
+  if (!user) throw new Error("USER_NOT_FOUND");
+
+  const allRoles = ["BUYER", "LISTER"];
+  const canAdd = allRoles.filter((role) => !user.roles.includes(role as any));
+
+  return {
+    current: user.primaryRole,
+    available: user.roles,
+    canAdd,
+  };
+}
+
+export async function completeOnboarding(userId: number) {
+  const updatedUser = await prisma.user.update({
+    where: { id: userId },
+    data: { onboardingComplete: true },
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      primaryRole: true,
+      roles: true,
+      onboardingComplete: true,
+    },
+  });
+
+  return updatedUser;
 }

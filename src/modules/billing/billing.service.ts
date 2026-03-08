@@ -1,3 +1,4 @@
+import { PaymentMethod, PaymentStatus } from "@prisma/client";
 import prisma from "../../prisma";
 
 export async function getAllPlans() {
@@ -56,7 +57,7 @@ export async function subscribeUserToPlan(userId: number, planId: number) {
           isActive: false,
           endDate: now,
         },
-      })
+      }),
     );
   }
 
@@ -71,7 +72,7 @@ export async function subscribeUserToPlan(userId: number, planId: number) {
       include: {
         plan: true,
       },
-    })
+    }),
   );
 
   const [, newSub] = await prisma.$transaction([
@@ -97,16 +98,9 @@ export async function getUserUsageSummary(userId: number) {
     throw new Error("NO_ACTIVE_SUBSCRIPTION");
   }
 
-  const usageAgg = await prisma.creditUsage.aggregate({
-    where: {
-      subscriptionId: activeSub.id,
-    },
-    _sum: {
-      creditsUsed: true,
-    },
-  });
-
-  const usedCredits = usageAgg._sum.creditsUsed || 0;
+  // Use direct tracking fields for quick dashboard access
+  const usedCredits = activeSub.currentCreditsUsed;
+  const usedStorageMb = activeSub.currentStorageMb;
 
   return {
     subscriptionId: activeSub.id,
@@ -120,6 +114,10 @@ export async function getUserUsageSummary(userId: number) {
     usage: {
       usedCredits,
       remainingCredits: activeSub.plan.maxAiCredits - usedCredits,
+      usedStorageMb,
+      remainingStorageMb: activeSub.plan.maxStorageMb - usedStorageMb,
+      storagePercentage: (usedStorageMb / activeSub.plan.maxStorageMb) * 100,
+      creditsPercentage: (usedCredits / activeSub.plan.maxAiCredits) * 100,
     },
   };
 }
@@ -154,7 +152,7 @@ export async function updatePlan(
     monthlyPriceUsd: number;
     maxAiCredits: number;
     maxStorageMb: number;
-  }>
+  }>,
 ) {
   const plan = await prisma.plan.update({
     where: { id },
@@ -162,4 +160,165 @@ export async function updatePlan(
   });
 
   return plan;
+}
+
+/**
+ * Process a mock payment for development/testing
+ * Instantly creates a successful payment and activates subscription
+ */
+export async function processMockPayment(userId: number, planId: number) {
+  const plan = await prisma.plan.findUnique({
+    where: { id: planId },
+  });
+
+  if (!plan) {
+    throw new Error("PLAN_NOT_FOUND");
+  }
+
+  const now = new Date();
+
+  // End any existing active subscription
+  const existing = await prisma.subscription.findFirst({
+    where: {
+      userId,
+      isActive: true,
+    },
+    orderBy: {
+      startDate: "desc",
+    },
+  });
+
+  if (existing) {
+    await prisma.subscription.update({
+      where: { id: existing.id },
+      data: {
+        isActive: false,
+        endDate: now,
+      },
+    });
+  }
+
+  // Create new subscription
+  const subscription = await prisma.subscription.create({
+    data: {
+      userId,
+      planId: plan.id,
+      startDate: now,
+      isActive: true,
+    },
+    include: {
+      plan: true,
+    },
+  });
+
+  // Create mock payment record
+  const payment = await prisma.payment.create({
+    data: {
+      userId,
+      subscriptionId: subscription.id,
+      planId: plan.id,
+      amount: plan.monthlyPriceUsd,
+      currency: "USD",
+      status: PaymentStatus.COMPLETED,
+      paymentMethod: PaymentMethod.MOCK,
+      description: `Mock payment for ${plan.name} plan`,
+      paidAt: now,
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+        },
+      },
+      plan: true,
+      subscription: {
+        include: {
+          plan: true,
+        },
+      },
+    },
+  });
+
+  return {
+    payment,
+    subscription,
+  };
+}
+
+/**
+ * Get payment history for a user
+ */
+export async function getPaymentHistory(
+  userId: number,
+  options?: {
+    limit?: number;
+    offset?: number;
+    status?: PaymentStatus;
+  },
+) {
+  const where = {
+    userId,
+    ...(options?.status && { status: options.status }),
+  };
+
+  const payments = await prisma.payment.findMany({
+    where,
+    include: {
+      plan: true,
+      subscription: {
+        include: {
+          plan: true,
+        },
+      },
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+    take: options?.limit || 50,
+    skip: options?.offset || 0,
+  });
+
+  const total = await prisma.payment.count({ where });
+
+  return {
+    payments,
+    total,
+    limit: options?.limit || 50,
+    offset: options?.offset || 0,
+  };
+}
+
+/**
+ * Get a single payment by ID
+ */
+export async function getPaymentById(paymentId: number, userId: number) {
+  const payment = await prisma.payment.findFirst({
+    where: {
+      id: paymentId,
+      userId,
+    },
+    include: {
+      plan: true,
+      subscription: {
+        include: {
+          plan: true,
+        },
+      },
+      user: {
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+        },
+      },
+    },
+  });
+
+  if (!payment) {
+    throw new Error("PAYMENT_NOT_FOUND");
+  }
+
+  return payment;
 }

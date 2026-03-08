@@ -9,10 +9,27 @@ export interface JwtUser {
   email: string;
 }
 
+export interface AuthUser extends JwtUser {
+  displayName: string;
+  emailVerified: boolean;
+  roles: string[];
+  primaryRole: string;
+  organizationId?: number;
+  onboardingComplete: boolean;
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: AuthUser;
+    }
+  }
+}
+
 export function authMiddleware(
   req: Request,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ) {
   const authHeader = req.headers.authorization;
 
@@ -27,13 +44,47 @@ export function authMiddleware(
   try {
     const decoded = jwt.verify(
       token!,
-      JWT_SECRET as string
+      JWT_SECRET as string,
     ) as unknown as JwtUser;
 
-    // Attach to request – simple version with "any"
-    (req as any).user = decoded;
+    // Fetch full user details including roles
+    prisma.user
+      .findUnique({
+        where: { id: decoded.id },
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+          emailVerifiedAt: true,
+          roles: true,
+          primaryRole: true,
+          organizationId: true,
+          onboardingComplete: true,
+        },
+      })
+      .then((user) => {
+        if (!user) {
+          return res.status(401).json({ error: "Invalid token" });
+        }
 
-    next();
+        // Attach full user info to request
+        (req as any).user = {
+          id: user.id,
+          email: user.email,
+          displayName: user.displayName,
+          emailVerified: !!user.emailVerifiedAt,
+          roles: user.roles,
+          primaryRole: user.primaryRole,
+          organizationId: user.organizationId || undefined,
+          onboardingComplete: user.onboardingComplete,
+        } as AuthUser;
+
+        next();
+      })
+      .catch((err) => {
+        console.error("Auth middleware error:", err);
+        return res.status(500).json({ error: "Internal server error" });
+      });
   } catch (err) {
     console.error("JWT verify error:", err);
     return res.status(401).json({ error: "Invalid or expired token" });
@@ -41,37 +92,70 @@ export function authMiddleware(
 }
 
 /**
+ * Role-based access control middleware factory
+ */
+export function requireRole(...allowedRoles: string[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const user = req.user;
+
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const hasRole = allowedRoles.some((role) => user.roles.includes(role));
+
+    if (!hasRole) {
+      return res.status(403).json({
+        error: `Access denied. Required roles: ${allowedRoles.join(", ")}`,
+      });
+    }
+
+    next();
+  };
+}
+
+// Specific role middleware
+export const requireLister = requireRole("LISTER", "ADMIN");
+export const requireBuyer = requireRole("BUYER", "LISTER", "ADMIN"); // Listers can also browse
+export const requireModerator = requireRole("MODERATOR", "ADMIN");
+export const requireEditor = requireRole("EDITOR", "ADMIN");
+
+/**
  * Middleware: only allow users with ADMIN role.
  */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const user = (req as any).user as JwtUser | undefined;
+  const user = req.user;
 
   if (!user) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  (async () => {
-    try {
-      const fullUser = await prisma.user.findUnique({
-        where: { id: user.id },
-        include: {
-          roles: {
-            include: { role: true },
-          },
-        },
-      });
+  if (!user.roles.includes("ADMIN")) {
+    return res.status(403).json({ error: "Admin access required" });
+  }
 
-      if (
-        !fullUser ||
-        !fullUser.roles.some((ur: any) => ur.role.name === "ADMIN")
-      ) {
-        return res.status(403).json({ error: "Admin access required" });
-      }
+  next();
+}
 
-      return next();
-    } catch (err) {
-      console.error("requireAdmin error:", err);
-      return res.status(500).json({ error: "Internal server error" });
-    }
-  })();
+/**
+ * Middleware: only allow users with MODERATOR or ADMIN role.
+ */
+export function requireModeratorOrAdmin(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const user = req.user;
+
+  if (!user) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  if (!user.roles.includes("MODERATOR") && !user.roles.includes("ADMIN")) {
+    return res
+      .status(403)
+      .json({ error: "Moderator or Admin access required" });
+  }
+
+  next();
 }

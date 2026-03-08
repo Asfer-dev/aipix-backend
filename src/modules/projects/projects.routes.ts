@@ -1,7 +1,7 @@
 // src/modules/projects/projects.routes.ts
 import { Router } from "express";
 import multer from "multer";
-import { authMiddleware } from "../../middleware/authMiddleware";
+import { authMiddleware, requireLister } from "../../middleware/authMiddleware";
 
 import {
   addImageHandler,
@@ -22,8 +22,9 @@ const router = Router();
 // Multer in-memory storage (same as before)
 const upload = multer({ storage: multer.memoryStorage() });
 
-// All project routes are protected
+// All project routes require LISTER role
 router.use(authMiddleware);
+router.use(requireLister);
 
 // ---- Projects ----
 router.get("/", listProjectsHandler);
@@ -39,14 +40,14 @@ router.post("/:id/images", addImageHandler);
 router.post(
   "/:id/images/upload",
   upload.single("file"),
-  uploadProjectImageHandler
+  uploadProjectImageHandler,
 );
 
 // Multiple files: field name "files"
 router.post(
   "/:id/images/upload-multiple",
   upload.array("files"), // you can pass a max count: upload.array("files", 20)
-  uploadMultipleProjectImagesHandler
+  uploadMultipleProjectImagesHandler,
 );
 
 // ---- Project ad copy ----

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { authMiddleware } from "../../middleware/authMiddleware";
+import { authMiddleware, requireLister } from "../../middleware/authMiddleware";
 import {
   completeJobHandler,
   createEnhancementJobsHandler,
@@ -9,6 +9,7 @@ import {
 const router = Router();
 
 router.use(authMiddleware);
+router.use(requireLister);
 
 // Create jobs for a set of images in a project
 router.post("/jobs", createEnhancementJobsHandler);

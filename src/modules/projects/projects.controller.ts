@@ -1,6 +1,12 @@
 import { Request, Response } from "express";
 import { uploadBufferToS3 } from "../../lib/s3";
 import { JwtUser } from "../../middleware/authMiddleware";
+import prisma from "../../prisma";
+import {
+  checkStorageQuota,
+  getFileSizeMb,
+  trackStorageUsage,
+} from "../../services/storage-tracking.service";
 import {
   addImageToProject,
   createProjectAdCopyForUser,
@@ -265,6 +271,29 @@ export async function uploadProjectImageHandler(req: Request, res: Response) {
       return res.status(400).json({ error: "file is required" });
     }
 
+    // Check user's subscription and storage quota
+    const subscription = await prisma.subscription.findFirst({
+      where: { userId: user.id, isActive: true },
+      include: { plan: true },
+    });
+
+    if (!subscription) {
+      return res.status(402).json({ error: "No active subscription" });
+    }
+
+    const fileSizeMb = getFileSizeMb(file.buffer);
+    const quotaCheck = await checkStorageQuota(subscription.id, fileSizeMb);
+
+    if (!quotaCheck.allowed) {
+      return res.status(402).json({
+        error: "Storage quota exceeded",
+        current: quotaCheck.currentMb,
+        max: quotaCheck.maxMb,
+        required: fileSizeMb,
+        remaining: quotaCheck.remainingMb,
+      });
+    }
+
     const ext = file.originalname.split(".").pop() || "bin";
 
     // 👇 everything goes under this “folder” in the bucket
@@ -283,6 +312,17 @@ export async function uploadProjectImageHandler(req: Request, res: Response) {
     });
 
     const image = await addImageToProject(user.id, projectId, url, label);
+
+    // Track storage usage
+    await trackStorageUsage({
+      subscriptionId: subscription.id,
+      fileSizeMb,
+      fileUrl: url,
+      fileName: file.originalname,
+      imageId: image.id,
+      projectId,
+      operation: "UPLOAD",
+    });
 
     return res.status(201).json({ image });
   } catch (err: any) {
@@ -318,6 +358,33 @@ export async function uploadMultipleProjectImagesHandler(
       return res.status(400).json({ error: "files are required" });
     }
 
+    // Check user's subscription and storage quota
+    const subscription = await prisma.subscription.findFirst({
+      where: { userId: user.id, isActive: true },
+      include: { plan: true },
+    });
+
+    if (!subscription) {
+      return res.status(402).json({ error: "No active subscription" });
+    }
+
+    // Calculate total size of all files
+    const totalSizeMb = files.reduce(
+      (sum, file) => sum + getFileSizeMb(file.buffer),
+      0,
+    );
+    const quotaCheck = await checkStorageQuota(subscription.id, totalSizeMb);
+
+    if (!quotaCheck.allowed) {
+      return res.status(402).json({
+        error: "Storage quota exceeded",
+        current: quotaCheck.currentMb,
+        max: quotaCheck.maxMb,
+        required: totalSizeMb,
+        remaining: quotaCheck.remainingMb,
+      });
+    }
+
     const basePrefix = "aipix/uploads"; // same folder prefix
 
     const images = await Promise.all(
@@ -343,6 +410,18 @@ export async function uploadMultipleProjectImagesHandler(
           url,
           label ?? file.originalname
         );
+
+        // Track storage usage for each file
+        const fileSizeMb = getFileSizeMb(file.buffer);
+        await trackStorageUsage({
+          subscriptionId: subscription.id,
+          fileSizeMb,
+          fileUrl: url,
+          fileName: file.originalname,
+          imageId: image.id,
+          projectId,
+          operation: "UPLOAD",
+        });
 
         return image;
       })

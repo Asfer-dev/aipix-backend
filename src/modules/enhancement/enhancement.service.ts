@@ -49,16 +49,8 @@ export async function createEnhancementJobsForImages(
 
   const neededCredits = imageIds.length; // 1 credit per image
 
-  const usageAgg = await prisma.creditUsage.aggregate({
-    where: {
-      subscriptionId: activeSub.id,
-    },
-    _sum: {
-      creditsUsed: true,
-    },
-  });
-
-  const usedCredits = usageAgg._sum.creditsUsed || 0;
+  // Use direct tracking field for quick credit check
+  const usedCredits = activeSub.currentCreditsUsed;
   const remainingCredits = activeSub.plan.maxAiCredits - usedCredits;
 
   if (remainingCredits < neededCredits) {
@@ -87,6 +79,14 @@ export async function createEnhancementJobsForImages(
           subscriptionId: activeSub.id,
           creditsUsed: neededCredits,
           reason: "ENHANCEMENT_JOB",
+        },
+      });
+
+      // Update subscription's current credits used
+      await tx.subscription.update({
+        where: { id: activeSub.id },
+        data: {
+          currentCreditsUsed: { increment: neededCredits },
         },
       });
 

@@ -1,26 +1,36 @@
 import { Request, Response } from "express";
 import { JwtUser } from "../../middleware/authMiddleware";
 import {
+  addUserRole,
+  completeOnboarding,
   disableMfa,
   enableMfa,
+  getUserRoles,
   loginUser,
   registerUser,
   requestPasswordReset,
   resendEmailVerification,
   resetPasswordWithToken,
   setupMfa,
+  switchUserRole,
   verifyEmail,
 } from "./auth.service";
 
 export async function registerHandler(req: Request, res: Response) {
   try {
-    const { email, password, displayName } = req.body;
+    const { email, password, displayName, primaryRole, phoneNumber } = req.body;
 
     if (!email || !password || !displayName) {
       return res.status(400).json({ error: "Missing fields" });
     }
 
-    const result = await registerUser(email, password, displayName);
+    const result = await registerUser(
+      email,
+      password,
+      displayName,
+      primaryRole,
+      phoneNumber,
+    );
 
     return res.status(201).json({
       token: result.token,
@@ -29,6 +39,11 @@ export async function registerHandler(req: Request, res: Response) {
   } catch (err: any) {
     if (err.message === "EMAIL_TAKEN") {
       return res.status(409).json({ error: "Email already registered" });
+    }
+    if (err.message === "INVALID_ROLE") {
+      return res
+        .status(400)
+        .json({ error: "Invalid role. Must be BUYER or LISTER" });
     }
 
     console.error("Register error:", err);
@@ -140,6 +155,17 @@ export async function meHandler(req: AuthRequest, res: Response) {
 
     const dbUser = await prisma.user.findUnique({
       where: { id: req.user.id },
+      select: {
+        id: true,
+        email: true,
+        displayName: true,
+        emailVerifiedAt: true,
+        mfaEnabled: true,
+        primaryRole: true,
+        roles: true,
+        onboardingComplete: true,
+        organizationId: true,
+      },
     });
 
     if (!dbUser) {
@@ -153,6 +179,10 @@ export async function meHandler(req: AuthRequest, res: Response) {
       displayName: dbUser.displayName,
       isEmailVerified: !!dbUser.emailVerifiedAt,
       mfaEnabled: dbUser.mfaEnabled,
+      primaryRole: dbUser.primaryRole,
+      roles: dbUser.roles,
+      onboardingComplete: dbUser.onboardingComplete,
+      organizationId: dbUser.organizationId,
     };
 
     return res.json({ user: apiUser });
@@ -251,6 +281,99 @@ export async function disableMfaHandler(req: Request, res: Response) {
     }
 
     console.error("Disable MFA error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+// Role Management Handlers
+export async function switchRoleHandler(req: Request, res: Response) {
+  try {
+    const user = (req as any).user as JwtUser | undefined;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    const { role } = req.body;
+    if (!role) return res.status(400).json({ error: "Role required" });
+
+    const updatedUser = await switchUserRole(user.id, role);
+    return res.json({ success: true, user: updatedUser });
+  } catch (err: any) {
+    if (err.message === "INVALID_ROLE") {
+      return res
+        .status(400)
+        .json({ error: "Invalid role. Must be BUYER or LISTER" });
+    }
+    if (err.message === "ROLE_NOT_AVAILABLE") {
+      return res
+        .status(403)
+        .json({ error: "You do not have access to this role" });
+    }
+    if (err.message === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    console.error("Switch role error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function addRoleHandler(req: Request, res: Response) {
+  try {
+    const user = (req as any).user as JwtUser | undefined;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    const { role } = req.body;
+    if (!role) return res.status(400).json({ error: "Role required" });
+
+    const updatedUser = await addUserRole(user.id, role);
+    return res.json({
+      success: true,
+      user: updatedUser,
+      message: `${role} role added successfully`,
+    });
+  } catch (err: any) {
+    if (err.message === "INVALID_ROLE") {
+      return res
+        .status(400)
+        .json({ error: "Invalid role. Must be BUYER or LISTER" });
+    }
+    if (err.message === "ROLE_ALREADY_EXISTS") {
+      return res.status(400).json({ error: "You already have this role" });
+    }
+    if (err.message === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    console.error("Add role error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getAvailableRolesHandler(req: Request, res: Response) {
+  try {
+    const user = (req as any).user as JwtUser | undefined;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    const roles = await getUserRoles(user.id);
+    return res.json({ success: true, data: roles });
+  } catch (err: any) {
+    if (err.message === "USER_NOT_FOUND") {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    console.error("Get roles error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function completeOnboardingHandler(req: Request, res: Response) {
+  try {
+    const user = (req as any).user as JwtUser | undefined;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    const updatedUser = await completeOnboarding(user.id);
+    return res.json({ success: true, user: updatedUser });
+  } catch (err) {
+    console.error("Complete onboarding error:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 }

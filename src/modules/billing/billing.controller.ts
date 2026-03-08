@@ -3,8 +3,11 @@ import { JwtUser } from "../../middleware/authMiddleware";
 import {
   createPlan,
   getAllPlans,
+  getPaymentById,
+  getPaymentHistory,
   getUserActiveSubscription,
   getUserUsageSummary,
+  processMockPayment,
   subscribeUserToPlan,
   updatePlan,
 } from "./billing.service";
@@ -139,6 +142,83 @@ export async function updatePlanHandler(req: Request, res: Response) {
     return res.json({ plan });
   } catch (err) {
     console.error("updatePlanHandler error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+/** Payment handlers */
+
+export async function processPaymentHandler(req: Request, res: Response) {
+  try {
+    const user = (req as any).user as JwtUser | undefined;
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { planId } = req.body;
+    if (!planId || isNaN(Number(planId))) {
+      return res
+        .status(400)
+        .json({ error: "planId is required and must be a number" });
+    }
+
+    const result = await processMockPayment(user.id, Number(planId));
+
+    return res.status(201).json({
+      message: "Payment processed successfully",
+      payment: result.payment,
+      subscription: result.subscription,
+    });
+  } catch (err: any) {
+    if (err.message === "PLAN_NOT_FOUND") {
+      return res.status(404).json({ error: "Plan not found" });
+    }
+
+    console.error("processPaymentHandler error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getPaymentHistoryHandler(req: Request, res: Response) {
+  try {
+    const user = (req as any).user as JwtUser | undefined;
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const limit = Number(req.query.limit) || 50;
+    const offset = Number(req.query.offset) || 0;
+
+    const result = await getPaymentHistory(user.id, { limit, offset });
+
+    return res.json(result);
+  } catch (err) {
+    console.error("getPaymentHistoryHandler error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getPaymentByIdHandler(req: Request, res: Response) {
+  try {
+    const user = (req as any).user as JwtUser | undefined;
+    if (!user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const paymentId = Number(req.params.id);
+    if (isNaN(paymentId)) {
+      return res.status(400).json({ error: "Invalid payment id" });
+    }
+
+    const payment = await getPaymentById(paymentId, user.id);
+
+    return res.json({ payment });
+  } catch (err: any) {
+    if (err.message === "PAYMENT_NOT_FOUND") {
+      return res.status(404).json({ error: "Payment not found" });
+    }
+
+    console.error("getPaymentByIdHandler error:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 }

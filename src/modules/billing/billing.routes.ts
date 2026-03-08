@@ -4,7 +4,10 @@ import {
   createPlanHandler,
   getMySubscriptionHandler,
   getMyUsageHandler,
+  getPaymentByIdHandler,
+  getPaymentHistoryHandler,
   getPlansHandler,
+  processPaymentHandler,
   subscribeHandler,
   updatePlanHandler,
 } from "./billing.controller";
@@ -25,6 +28,11 @@ router.post("/subscribe", subscribeHandler);
 
 // Current user's usage summary (credits)
 router.get("/me/usage", getMyUsageHandler);
+
+// Payment routes
+router.post("/payment/process", processPaymentHandler);
+router.get("/me/payments", getPaymentHistoryHandler);
+router.get("/me/payments/:id", getPaymentByIdHandler);
 
 // Admin-only: create/update plans
 router.post("/plans", requireAdmin, createPlanHandler);

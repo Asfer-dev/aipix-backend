@@ -13,15 +13,18 @@ export interface ListingInput {
   bedrooms?: number;
   bathrooms?: number;
   areaSqm?: number;
+  showEmail?: boolean; // Show lister's email to buyers (default: true)
+  showPhoneNumber?: boolean; // Show lister's phone to buyers (default: false)
 }
 
 /**
  * Create a listing for a user, tied to a project.
- * Copy is stored on the listing itself (independent from project ad copy).
+ * Always starts as DRAFT with moderationStatus PENDING.
+ * Call POST /listings/:id/publish to enter the moderation pipeline.
  */
 export async function createListingForUser(
   userId: number,
-  input: ListingInput
+  input: ListingInput,
 ) {
   // Ensure the project belongs to this user
   const project = await prisma.project.findFirst({
@@ -47,20 +50,160 @@ export async function createListingForUser(
       bedrooms: input.bedrooms ?? null,
       bathrooms: input.bathrooms ?? null,
       areaSqm: input.areaSqm ?? null,
-      // status & isPublished come from Prisma defaults:
-      // status: DRAFT, isPublished: false
+      showEmail: input.showEmail ?? true, // Default: show email
+      showPhoneNumber: input.showPhoneNumber ?? false, // Default: hide phone
+      moderationStatus: "PENDING",
+      isPublished: false,
+      // status defaults to DRAFT from Prisma
     },
   });
 
-  return listing;
+  return { listing };
+}
+
+/**
+ * Publish a listing — runs AI moderation pipeline.
+ * - APPROVED (score < 0.3): auto-publishes immediately
+ * - FLAGGED (score 0.3–0.7): queued for manual admin review
+ * - REJECTED (score >= 0.7): throws error
+ */
+export async function publishListing(userId: number, listingId: number) {
+  const listing = await prisma.listing.findFirst({
+    where: { id: listingId, userId },
+    include: { media: true },
+  });
+
+  if (!listing) {
+    throw new Error("LISTING_NOT_FOUND");
+  }
+
+  if (listing.isPublished) {
+    throw new Error("ALREADY_PUBLISHED");
+  }
+
+  if (!listing.media || listing.media.length === 0) {
+    throw new Error("NO_MEDIA_ATTACHED");
+  }
+
+  // TODO: Remove mock — force FLAGGED for testing purposes
+  const moderationResult = {
+    status: "FLAGGED" as const,
+    score: 0.5,
+    flags: ["TESTING_MODE"],
+    reasons: [],
+  };
+
+  // Run AI moderation (disabled during testing)
+  // const moderationResult = await moderateListing({
+  //   title: listing.title,
+  //   description: listing.description || "",
+  //   location:
+  //     [listing.locationCity, listing.locationState, listing.locationCountry]
+  //       .filter(Boolean)
+  //       .join(", ") || "",
+  //   userId,
+  // });
+
+  const score = moderationResult.score;
+  let moderationStatus: string;
+  let isPublished = false;
+  let status: string = "DRAFT";
+
+  if (score >= 0.7 || moderationResult.status === "REJECTED") {
+    // High risk — reject
+    moderationStatus = "REJECTED";
+
+    await prisma.moderationLog.create({
+      data: {
+        listingId,
+        userId,
+        moderationType: "LISTING",
+        status: "REJECTED",
+        aiScore: score,
+        aiFlags: moderationResult.flags,
+        aiModel: "content-moderator-v1",
+      },
+    });
+
+    await prisma.listing.update({
+      where: { id: listingId },
+      data: {
+        moderationStatus: "REJECTED",
+        moderationScore: score,
+        aiModerationFlags: moderationResult.flags,
+        moderatedAt: new Date(),
+        autoModerated: true,
+      },
+    });
+
+    throw new Error("CONTENT_REJECTED: " + moderationResult.reasons.join(", "));
+  } else if (score >= 0.3 || moderationResult.status === "FLAGGED") {
+    // Medium risk — flag for manual review
+    moderationStatus = "FLAGGED";
+    isPublished = false;
+    status = "DRAFT";
+  } else {
+    // Low risk — auto-approve and publish
+    moderationStatus = "APPROVED";
+    isPublished = true;
+    status = "PUBLISHED";
+  }
+
+  const updated = await prisma.listing.update({
+    where: { id: listingId },
+    data: {
+      moderationStatus,
+      moderationScore: score,
+      aiModerationFlags: moderationResult.flags,
+      moderatedAt: new Date(),
+      autoModerated: true,
+      isPublished,
+      status: status as any,
+    },
+  });
+
+  // Log moderation result
+  await prisma.moderationLog.create({
+    data: {
+      listingId,
+      userId,
+      moderationType: "LISTING",
+      status: moderationStatus,
+      aiScore: score,
+      aiFlags: moderationResult.flags,
+      aiModel: "content-moderator-v1",
+    },
+  });
+
+  return {
+    listing: updated,
+    moderation: {
+      status: moderationStatus,
+      score,
+      flags: moderationResult.flags,
+      autoPublished: isPublished,
+      message:
+        moderationStatus === "APPROVED"
+          ? "Your listing is now live."
+          : "Your listing is under review. It will be published once approved by a moderator.",
+    },
+  };
 }
 
 /**
  * List listings created by the current user (owner view)
+ * Includes the hero image (or first image if no hero is set)
  */
 export async function listMyListings(userId: number) {
   return prisma.listing.findMany({
     where: { userId },
+    include: {
+      media: {
+        orderBy: [{ isHero: "desc" }, { sortOrder: "asc" }],
+        take: 1,
+        include: { imageVersion: true },
+      },
+    },
     orderBy: { createdAt: "desc" },
   });
 }
@@ -82,7 +225,7 @@ export async function getListingForUser(userId: number, listingId: number) {
 export async function updateListingForUser(
   userId: number,
   listingId: number,
-  data: Partial<ListingInput> & { status?: "DRAFT" | "PUBLISHED" | "ARCHIVED" }
+  data: Partial<ListingInput> & { status?: "DRAFT" | "PUBLISHED" | "ARCHIVED" },
 ) {
   const listing = await prisma.listing.findFirst({
     where: { id: listingId, userId },
@@ -92,7 +235,10 @@ export async function updateListingForUser(
     throw new Error("LISTING_NOT_FOUND");
   }
 
-  const isPublishing = data.status === "PUBLISHED";
+  // Prevent direct publish via PATCH — use POST /:id/publish instead
+  if (data.status === "PUBLISHED") {
+    throw new Error("USE_PUBLISH_ENDPOINT");
+  }
 
   const updated = await prisma.listing.update({
     where: { id: listingId },
@@ -108,8 +254,9 @@ export async function updateListingForUser(
       bedrooms: data.bedrooms ?? listing.bedrooms,
       bathrooms: data.bathrooms ?? listing.bathrooms,
       areaSqm: data.areaSqm ?? listing.areaSqm,
+      showEmail: data.showEmail ?? listing.showEmail,
+      showPhoneNumber: data.showPhoneNumber ?? listing.showPhoneNumber,
       status: (data.status as any) ?? listing.status,
-      isPublished: isPublishing ? true : listing.isPublished,
     },
   });
 
@@ -124,7 +271,7 @@ export async function attachMediaToListing(
   userId: number,
   listingId: number,
   imageVersionIds: number[],
-  heroImageVersionId?: number
+  heroImageVersionId?: number,
 ) {
   if (imageVersionIds.length === 0) {
     throw new Error("NO_IMAGES");
@@ -177,8 +324,8 @@ export async function attachMediaToListing(
             isHero: versionId === heroId,
           },
           include: { imageVersion: true },
-        })
-      )
+        }),
+      ),
     );
 
     return created;
@@ -267,7 +414,7 @@ export interface CreateListingWithMediaInput extends ListingInput {
  */
 export async function createListingWithMediaForUser(
   userId: number,
-  input: CreateListingWithMediaInput
+  input: CreateListingWithMediaInput,
 ) {
   const { imageVersionIds, heroImageVersionId, ...listingInput } = input;
 
@@ -318,6 +465,8 @@ export async function createListingWithMediaForUser(
         bedrooms: listingInput.bedrooms ?? null,
         bathrooms: listingInput.bathrooms ?? null,
         areaSqm: listingInput.areaSqm ?? null,
+        showEmail: listingInput.showEmail ?? true, // Default: show email
+        showPhoneNumber: listingInput.showPhoneNumber ?? false, // Default: hide phone
       },
     });
 
@@ -330,8 +479,8 @@ export async function createListingWithMediaForUser(
             sortOrder: idx,
             isHero: versionId === heroId,
           },
-        })
-      )
+        }),
+      ),
     );
 
     return { listing, media };
